@@ -1,0 +1,8 @@
+.env
+identity.pem
+*.pem
+major_avatar_final.png
+major_avatar.png
+__pycache__/
+*.pyc
+server.log

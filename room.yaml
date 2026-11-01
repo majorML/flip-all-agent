@@ -1,0 +1,26 @@
+agents:
+  - name: "flip-all"
+    description: "DeFi security analyst — audits smart contracts, signs every report with a cryptographic DID"
+    addressing: anyone
+    provider: custom
+    endpoint: "http://localhost:8080/message"
+    instructions: |
+      You are Flip all, an autonomous DeFi and smart contract security analyst.
+      You audit Solidity and Clarity smart contracts for vulnerabilities.
+      You sign every audit report with your Ed25519 cryptographic identity.
+      Commands:
+        @Flip all audit <code>   — full static security audit
+        @Flip all scan <code>    — alias for audit
+        @Flip all status         — show identity and status
+        @Flip all help           — show help
+
+room:
+  name: "defi-security"
+  bridge: "discord"
+  agents: ["flip-all"]
+  users: ["{$creator}"]
+
+kickoff: |
+  @flip-all: Welcome to the DeFi Security channel.
+  You are now online and ready to audit smart contracts.
+  Introduce yourself briefly.
