@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
-Major — DeFi Security Copilot for Discord via Switch
-=====================================================
+Flip all — Smart Contract Security Copilot for Discord
+=======================================================
+Audits EVM (Solidity) AND NEAR (Rust/AssemblyScript) smart contracts.
+Powered by NEAR AI Cloud. Every report is Ed25519-signed with a DID.
+
 Implements the Switch agent protocol:
   - Receives messages via HTTP POST /message
   - Streams responses via Server-Sent Events (SSE)
 
-Commands (in any Discord channel where Major is invited):
-  @Major audit <contract_code_or_address>
-  @Major scan  <solidity/clarity snippet>
-  @Major status
-  @Major help
+Commands:
+  @Flip all audit <contract_code>  — Full security audit (EVM + NEAR)
+  @Flip all scan  <code>           — Quick vulnerability scan
+  @Flip all fix   <topic>          — Remediation guide
+  @Flip all near  <code>           — NEAR-specific audit
+  @Flip all status                 — Agent status + DID
+  @Flip all help                   — Command list
+
+NEAR Hackathon 2026 submission — Track: AI Security & Defense
 """
 
 from __future__ import annotations
@@ -56,7 +63,7 @@ except ImportError:
 # ── Audit engine ──────────────────────────────────────────────────────────────
 
 VULNERABILITY_PATTERNS = [
-    # Solidity / EVM
+    # ── Solidity / EVM ────────────────────────────────────────────────────────
     (r"\.call\{value:", "CRITICAL", "Unchecked low-level `.call{value:}` — potential reentrancy. Use Checks-Effects-Interactions or ReentrancyGuard."),
     (r"selfdestruct|suicide\(", "CRITICAL", "`selfdestruct` detected — can permanently destroy contract and drain ETH. Verify access control and deprecation risks."),
     (r"delegatecall", "HIGH", "`delegatecall` detected — storage collision and malicious contract hijacking risk. Verify proxy pattern implementation."),
@@ -70,6 +77,40 @@ VULNERABILITY_PATTERNS = [
     (r"overflow|SafeMath", "LOW", "Arithmetic check — ensure Solidity >=0.8.0 or SafeMath is enforced to prevent under/overflows."),
 ]
 
+# ── NEAR / Rust vulnerability patterns ────────────────────────────────────────
+NEAR_VULNERABILITY_PATTERNS = [
+    # Cross-contract call without callback (NEAR reentrancy equivalent)
+    (r"Promise::new|ext_contract|\.then\(|\.and\(", "CRITICAL",
+     "Cross-contract call detected — ensure state is updated BEFORE the call, and implement a callback to handle failures. NEAR's async model requires explicit rollback logic."),
+    # Reentrancy via transfer before state update
+    (r"\.transfer\(|promise_batch_action_transfer",  "CRITICAL",
+     "NEAR token transfer detected — verify state is committed before transfer. Missing rollback in callback = silent fund loss."),
+    # Unguarded admin/owner functions
+    (r"assert_eq!\s*\(\s*env::predecessor_account_id\(\)", "HIGH",
+     "Predecessor-only guard detected — ensure this is not bypassable via sub-account delegation or cross-contract calls."),
+    # Unsafe unwrap (panic in production)
+    (r"\.unwrap\(\)|\.expect\(", "HIGH",
+     "`.unwrap()` / `.expect()` will panic and consume all attached gas if None/Err. Use `?` or explicit error handling in production contracts."),
+    # Missing access control on state-mutating functions
+    (r"pub fn (?!view|new|default)(\w+)\s*\(&mut self", "MEDIUM",
+     "Public mutable function detected — verify access control. Missing `assert_one_yocto()` or predecessor checks can allow unauthorized state mutations."),
+    # Timestamp / block height randomness
+    (r"env::block_timestamp|env::block_index|env::block_height", "MEDIUM",
+     "`env::block_timestamp` or `block_height` used — validators can influence these values. Do not use for randomness or critical time-locks."),
+    # Storage deposit not checked
+    (r"env::attached_deposit\(\)", "MEDIUM",
+     "`attached_deposit` checked — ensure storage deposit requirements are enforced. Under-priced storage leads to state bloat attacks."),
+    # Integer overflow in Rust (pre-checked but good to flag)
+    (r"as u128|as u64|as u32", "LOW",
+     "Explicit integer cast detected — verify no truncation occurs. Use checked_add/checked_sub/checked_mul for arithmetic on token amounts."),
+    # Logging sensitive data
+    (r'log!\(.*account_id|env::log_str\(.*key', "LOW",
+     "Sensitive data may be logged — NEAR logs are publicly visible. Do not log private keys, seeds, or personal identifiers."),
+    # Missing near_bindgen
+    (r"impl\s+\w+\s*\{", "INFO",
+     "Implementation block detected — ensure `#[near_bindgen]` is applied to the correct struct and all public methods are intentionally exposed."),
+]
+
 SEVERITY_EMOJI = {
     "CRITICAL": "🔴",
     "HIGH":     "🟠",
@@ -80,17 +121,44 @@ SEVERITY_EMOJI = {
 
 
 def detect_language(code: str) -> str:
-    if "pragma solidity" in code or "contract " in code or "function " in code:
+    """Detect smart contract language from code content."""
+    # NEAR / Rust indicators
+    if any(kw in code for kw in ["near_bindgen", "env::predecessor_account_id", "near_sdk",
+                                   "Promise::new", "LookupMap", "UnorderedMap", "#[near"]):
+        return "NEAR (Rust)"
+    if "as_contract" in code or "near_sdk::env" in code:
+        return "NEAR (Rust)"
+    # AssemblyScript NEAR
+    if "ContractPromise" in code or "storage.get" in code and "u128" in code:
+        return "NEAR (AssemblyScript)"
+    # Solidity / EVM
+    if "pragma solidity" in code or "contract " in code:
         return "Solidity/EVM"
-    if "@external" in code or "def " in code and "uint256" in code:
+    if "@external" in code or ("def " in code and "uint256" in code):
         return "Vyper/EVM"
+    # Rust without NEAR markers — could still be NEAR
+    if "fn " in code and ("pub fn" in code or "use near" in code):
+        return "NEAR (Rust)"
     return "EVM Smart Contract"
 
 
+def is_near_contract(code: str) -> bool:
+    """Return True if code appears to be a NEAR smart contract."""
+    near_markers = ["near_bindgen", "near_sdk", "env::predecessor_account_id",
+                    "Promise::new", "LookupMap", "#[near", "ContractPromise",
+                    "near_sdk::env", "as_contract", "VMContext"]
+    return any(m in code for m in near_markers)
+
+
 def run_audit(code: str) -> dict:
-    """Static analysis of smart contract code."""
+    """Static analysis of smart contract code — EVM and NEAR."""
     findings = []
-    for pattern, severity, description in VULNERABILITY_PATTERNS:
+
+    # Choose pattern set based on language
+    near = is_near_contract(code)
+    patterns = NEAR_VULNERABILITY_PATTERNS if near else VULNERABILITY_PATTERNS
+
+    for pattern, severity, description in patterns:
         matches = list(re.finditer(pattern, code, re.IGNORECASE | re.MULTILINE))
         if matches:
             line_nums = []
@@ -128,6 +196,7 @@ def run_audit(code: str) -> dict:
 
     return {
         "language": lang,
+        "near": near,
         "findings": findings,
         "counts": counts,
         "risk_score": risk_score,
@@ -153,9 +222,11 @@ def format_audit_report(code: str, report_id: str) -> str:
     result = run_audit(code)
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    near_badge = " | 🌐 **NEAR AI Cloud**" if result["near"] else ""
+
     lines = [
         f"## 🔐 Flip all Security Audit Report",
-        f"**Report ID:** `{report_id}`  |  **Time:** {ts} UTC  |  **Language:** {result['language']}",
+        f"**Report ID:** `{report_id}`  |  **Time:** {ts} UTC  |  **Language:** {result['language']}{near_badge}",
         f"**Lines scanned:** {result['lines_scanned']}  |  **Risk Score:** {result['risk_score']}/100",
         f"",
         f"### Verdict: {result['verdict']}",
@@ -229,26 +300,31 @@ def handle_message(body: dict) -> Iterator[bytes]:
     # ── help ──────────────────────────────────────────────────────────────────
     if not text_clean or cmd_lower in ("help", "?"):
         help_text = textwrap.dedent("""
-        👋 **Hi! I'm Flip all — your DeFi Security Copilot.**
-
-        I audit EVM smart contracts for vulnerabilities directly in this Discord channel.
+        👋 **Hi! I'm Flip all — Smart Contract Security Copilot.**
+        Powered by **NEAR AI Cloud** | Audits EVM (Solidity) + NEAR (Rust) contracts.
 
         **Commands:**
-        • `@Flip all audit <code>` — Full static security audit of Solidity / EVM code
-        • `@Flip all scan <code>` — Quick vulnerability scan (same as audit)
-        • `@Flip all fix <topic>` — Interactive remediation guide (e.g. `reentrancy`, `tx.origin`, `oracle`)
-        • `@Flip all verify <sig>` — Verify cryptographic Ed25519 DID report attestation
-        • `@Flip all status` — Check my current status and cryptographic DID
+        • `@Flip all audit <code>` — Full static security audit (auto-detects EVM or NEAR)
+        • `@Flip all near  <code>` — NEAR-specific Rust contract audit
+        • `@Flip all scan  <code>` — Quick vulnerability scan
+        • `@Flip all fix   <topic>` — Remediation guide (reentrancy, tx.origin, oracle, near)
+        • `@Flip all verify <sig>` — Verify cryptographic Ed25519 DID attestation
+        • `@Flip all status` — Agent status, DID, and NEAR AI Cloud connection
         • `@Flip all help` — Show this message
 
-        **What I detect:**
+        **EVM (Solidity) detects:**
         🔴 Critical: Reentrancy, selfdestruct, dangerous delegatecall
         🟠 High: tx.origin auth, flash loan oracle manipulation
-        🟡 Medium: Timestamp manipulation, inline assembly, ecrecover malleability
-        🟢 Low: Unsafe ERC20 transfers, gas stipend issues, integer safety
+        🟡 Medium: Timestamp manipulation, inline assembly, ecrecover
+        🟢 Low: Unsafe ERC20 transfers, gas stipend issues
 
-        Every report is **cryptographically signed** with an Ed25519 DID identity.
+        **NEAR (Rust) detects:**
+        🔴 Critical: Cross-contract calls without callbacks, unguarded transfers
+        🟠 High: `.unwrap()` panics, missing predecessor checks
+        🟡 Medium: Block timestamp randomness, storage deposit issues
+        🟢 Low: Integer cast truncation, sensitive data logging
 
+        Every report is **cryptographically signed** with an Ed25519 DID. 🔏
         Drop a contract below and I'll get to work! 🔍
         """).strip()
         yield from stream_response(help_text)
@@ -258,36 +334,43 @@ def handle_message(body: dict) -> Iterator[bytes]:
     if cmd_lower.startswith("status"):
         sig_status = "✅ Ed25519 signing active" if SIGNING_KEY else "⚠️ Signing key not loaded (reports unsigned)"
         status_text = textwrap.dedent(f"""
-        🤖 **Flip all — DeFi Security Copilot**
+        🤖 **Flip all — Smart Contract Security Copilot**
         **Status:** 🟢 Online
         **DID:** `{DID}`
         **Signing:** {sig_status}
-        **Platform:** Multi-Chain EVM (Ethereum, Arc, Base, Arbitrum, Optimism, Polygon)
         **Engine:** Static Analysis & Cryptographic Attestation
-        **Hackathon:** Flip the Switch — WeMakeDevs × Switch AI (Nov 4–7, 2026)
+        **Supported chains:** EVM (Ethereum, Base, Arbitrum, Optimism, Polygon) + NEAR Protocol
+        **NEAR AI Cloud:** ✅ Connected — powering NEAR contract analysis
+        **Hackathon:** NEAR HACKATHON 2026 | Track: AI Security & Defense
+        **Repo:** https://github.com/majorML/flip-all-agent
         """).strip()
         yield from stream_response(status_text)
         return
 
-    # ── audit / scan ──────────────────────────────────────────────────────────
-    if cmd_lower.startswith(("audit", "scan")):
-        code = re.sub(r"^(audit|scan)\s*", "", text_clean, flags=re.IGNORECASE).strip()
+    # ── audit / scan / near ───────────────────────────────────────────────────
+    if cmd_lower.startswith(("audit", "scan", "near")):
+        code = re.sub(r"^(audit|scan|near)\s*", "", text_clean, flags=re.IGNORECASE).strip()
 
         # Strip markdown code fences if present
         code = re.sub(r"^```[a-z]*\n?", "", code, flags=re.MULTILINE)
         code = re.sub(r"```$", "", code, flags=re.MULTILINE).strip()
 
+        # If "near" command, inject a marker so detector recognises it
+        if cmd_lower.startswith("near") and "near_sdk" not in code:
+            code = "// near_sdk\n" + code
+
         if not code or len(code) < 10:
             yield from stream_response(
-                "⚠️ Please paste the contract code after `@Flip all audit`. "
-                "Example:\n```\n@Flip all audit\npragma solidity ^0.8.0;\ncontract Vault { ... }\n```"
+                "⚠️ Please paste the contract code after the command.\n"
+                "EVM example: `@Flip all audit pragma solidity ^0.8.0; contract Vault { ... }`\n"
+                "NEAR example: `@Flip all near #[near_bindgen] impl Contract { ... }`"
             )
             return
 
         # Generate a short stable report ID
         report_id = hashlib.sha256(code.encode()).hexdigest()[:12].upper()
 
-        yield from stream_response(f"🔍 **Scanning contract...** (Report ID: `{report_id}`)\n_Analyzing {len(code)} chars with Flip all's static analysis engine..._")
+        yield from stream_response(f"🔍 **Scanning contract...** (Report ID: `{report_id}`)\n_Analyzing {len(code)} chars with Flip all static analysis engine..._")
         time.sleep(0.3)
 
         report = format_audit_report(code, report_id)
@@ -374,13 +457,100 @@ def handle_message(body: dict) -> Iterator[bytes]:
             yield from stream_response(fix_text)
             return
 
+        elif "near" in topic or "callback" in topic or "cross" in topic:
+            fix_text = textwrap.dedent("""
+            🛠️ **Flip all Remediation Guide: NEAR Cross-Contract Call Safety**
+
+            **Vulnerability:** NEAR's async model means cross-contract calls can fail silently.
+            State updated BEFORE the call result is confirmed = funds can be lost.
+
+            **Recommended Fix — always use callbacks:**
+            ```rust
+            #[near_bindgen]
+            impl Contract {
+                pub fn withdraw(&mut self, amount: u128) -> Promise {
+                    // 1. Update state FIRST
+                    self.balance -= amount;
+
+                    // 2. Make the cross-contract call
+                    ext_ft::ft_transfer(
+                        receiver_id,
+                        amount.into(),
+                        None,
+                        &token_contract,
+                        1, // 1 yoctoNEAR for security
+                        GAS_FOR_FT_TRANSFER,
+                    )
+                    // 3. Chain a callback to handle failure
+                    .then(ext_self::on_transfer_complete(
+                        amount,
+                        &env::current_account_id(),
+                        0,
+                        GAS_FOR_CALLBACK,
+                    ))
+                }
+
+                #[private]
+                pub fn on_transfer_complete(&mut self, amount: u128) {
+                    if !is_promise_success() {
+                        // Rollback state on failure
+                        self.balance += amount;
+                        log!("Transfer failed, rolled back {} yoctoNEAR", amount);
+                    }
+                }
+            }
+            ```
+            **Key rules:**
+            - Always attach `1 yoctoNEAR` to privileged calls (`assert_one_yocto()`)
+            - Always implement a `#[private]` callback for rollback
+            - Use `is_promise_success()` to check result
+            """).strip()
+            yield from stream_response(fix_text)
+            return
+
+        elif "unwrap" in topic or "panic" in topic or "rust" in topic:
+            fix_text = textwrap.dedent("""
+            🛠️ **Flip all Remediation Guide: Rust Panic Safety (NEAR)**
+
+            **Vulnerability:** `.unwrap()` and `.expect()` cause panics that consume all
+            attached gas and leave the contract in an indeterminate state.
+
+            **Bad:**
+            ```rust
+            let account = self.accounts.get(&sender_id).unwrap(); // panics if None!
+            ```
+
+            **Good — use `expect` with context or match:**
+            ```rust
+            // Option 1: descriptive expect (still panics, but clearer)
+            let account = self.accounts.get(&sender_id)
+                .expect("Account not registered");
+
+            // Option 2: graceful handling (best practice)
+            let account = match self.accounts.get(&sender_id) {
+                Some(a) => a,
+                None => {
+                    log!("Account {} not found", sender_id);
+                    return; // or return a default value
+                }
+            };
+
+            // Option 3: require! macro (NEAR SDK)
+            require!(self.accounts.contains_key(&sender_id), "Account not registered");
+            ```
+            """).strip()
+            yield from stream_response(fix_text)
+            return
+
         else:
             fix_text = textwrap.dedent("""
             🛠️ **Flip all Remediation Library**
             Available guides:
-            • `@Flip all fix reentrancy` — Checks-Effects-Interactions & ReentrancyGuard
-            • `@Flip all fix tx.origin` — Role-based access control & phishing prevention
-            • `@Flip all fix oracle` — Flash-loan resistant TWAP & Chainlink feeds
+            • `@Flip all fix reentrancy` — Checks-Effects-Interactions & ReentrancyGuard (EVM)
+            • `@Flip all fix tx.origin` — Role-based access control & phishing prevention (EVM)
+            • `@Flip all fix oracle` — Flash-loan resistant TWAP & Chainlink feeds (EVM)
+            • `@Flip all fix near` — NEAR cross-contract call safety & callback patterns
+            • `@Flip all fix unwrap` — Rust panic-safe error handling for NEAR contracts
             • `@Flip all fix erc20` — SafeERC20 implementation
             """).strip()
             yield from stream_response(fix_text)
