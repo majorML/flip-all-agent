@@ -64,21 +64,26 @@ class MajorClient(discord.Client):
 
     async def on_ready(self):
         sign_status = "✅ signing active" if SIGNING_KEY else "⚠️ signing inactive"
+        # Explicitly broadcast online status and activity
+        activity = discord.Activity(type=discord.ActivityType.watching, name="Smart Contracts | @Flip")
+        await self.change_presence(status=discord.Status.online, activity=activity)
         print(f"[major] Logged in as {self.user} (ID: {self.user.id})")
         print(f"[major] DID: {DID}")
         print(f"[major] {sign_status}")
-        print(f"[major] Listening for @Major mentions...")
+        print(f"[major] Presence set to ONLINE")
+        print(f"[major] Listening for @Flip mentions...")
 
     async def on_message(self, message: discord.Message):
         # Ignore own messages
         if message.author == self.user:
             return
 
-        # Only respond when mentioned or when in DM
+        # Respond if mentioned by tag, in DM, or if text starts with @flip, @flip all, or @major
         is_mentioned = self.user in message.mentions
         is_dm = isinstance(message.channel, discord.DMChannel)
+        has_text_mention = bool(re.match(r"^@?(flip(\s*all)?|major)\b", message.content.strip(), flags=re.IGNORECASE))
 
-        if not (is_mentioned or is_dm):
+        if not (is_mentioned or is_dm or has_text_mention):
             return
 
         content = message.content.strip()

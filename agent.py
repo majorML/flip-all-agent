@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Flip all — Smart Contract Security Copilot for Discord
-=======================================================
+Flip — Smart Contract Security Copilot for Discord
+===================================================
 Audits EVM (Solidity) AND NEAR (Rust/AssemblyScript) smart contracts.
 Powered by NEAR AI Cloud. Every report is Ed25519-signed with a DID.
 
@@ -10,12 +10,12 @@ Implements the Switch agent protocol:
   - Streams responses via Server-Sent Events (SSE)
 
 Commands:
-  @Flip all audit <contract_code>  — Full security audit (EVM + NEAR)
-  @Flip all scan  <code>           — Quick vulnerability scan
-  @Flip all fix   <topic>          — Remediation guide
-  @Flip all near  <code>           — NEAR-specific audit
-  @Flip all status                 — Agent status + DID
-  @Flip all help                   — Command list
+  @Flip audit <contract_code>  — Full security audit (EVM + NEAR)
+  @Flip scan  <code>           — Quick vulnerability scan
+  @Flip fix   <topic>          — Remediation guide
+  @Flip near  <code>           — NEAR-specific audit
+  @Flip status                 — Agent status + DID
+  @Flip help                   — Command list
 
 NEAR Hackathon 2026 submission — Track: AI Security & Defense
 """
@@ -225,7 +225,7 @@ def format_audit_report(code: str, report_id: str) -> str:
     near_badge = " | 🌐 **NEAR AI Cloud**" if result["near"] else ""
 
     lines = [
-        f"## 🔐 Flip all Security Audit Report",
+        f"## 🔐 Flip Security Audit Report",
         f"**Report ID:** `{report_id}`  |  **Time:** {ts} UTC  |  **Language:** {result['language']}{near_badge}",
         f"**Lines scanned:** {result['lines_scanned']}  |  **Risk Score:** {result['risk_score']}/100",
         f"",
@@ -258,7 +258,7 @@ def format_audit_report(code: str, report_id: str) -> str:
     if sig:
         lines.append(f"")
         lines.append(f"---")
-        lines.append(f"🔏 **Signed by Flip all** | DID: `{DID}`")
+        lines.append(f"🔏 **Signed by Flip** | DID: `{DID}`")
         lines.append(f"Signature: `{sig[:48]}...`")
         report_text = "\n".join(lines)
 
@@ -294,23 +294,23 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
     # Strip Discord mention tags (<@123456> or <@!123456>) and @Name prefixes
     text_clean = re.sub(r"<@!?\d+>", "", text)
-    text_clean = re.sub(r"^@?(major|flip\s*all)\s*", "", text_clean, flags=re.IGNORECASE).strip()
+    text_clean = re.sub(r"^@?(major|flip\s*all|flip)\b\s*", "", text_clean, flags=re.IGNORECASE).strip()
     cmd_lower = text_clean.lower()
 
     # ── help ──────────────────────────────────────────────────────────────────
     if not text_clean or cmd_lower in ("help", "?"):
         help_text = textwrap.dedent("""
-        👋 **Hi! I'm Flip all — Smart Contract Security Copilot.**
+        👋 **Hi! I'm Flip — Smart Contract Security Copilot.**
         Powered by **NEAR AI Cloud** | Audits EVM (Solidity) + NEAR (Rust) contracts.
 
         **Commands:**
-        • `@Flip all audit <code>` — Full static security audit (auto-detects EVM or NEAR)
-        • `@Flip all near  <code>` — NEAR-specific Rust contract audit
-        • `@Flip all scan  <code>` — Quick vulnerability scan
-        • `@Flip all fix   <topic>` — Remediation guide (reentrancy, tx.origin, oracle, near)
-        • `@Flip all verify <sig>` — Verify cryptographic Ed25519 DID attestation
-        • `@Flip all status` — Agent status, DID, and NEAR AI Cloud connection
-        • `@Flip all help` — Show this message
+        • `@Flip audit <code>` — Full static security audit (auto-detects EVM or NEAR)
+        • `@Flip near  <code>` — NEAR-specific Rust contract audit
+        • `@Flip scan  <code>` — Quick vulnerability scan
+        • `@Flip fix   <topic>` — Remediation guide (reentrancy, tx.origin, oracle, near)
+        • `@Flip verify <sig>` — Verify cryptographic Ed25519 DID attestation
+        • `@Flip status` — Agent status, DID, and NEAR AI Cloud connection
+        • `@Flip help` — Show this message
 
         **EVM (Solidity) detects:**
         🔴 Critical: Reentrancy, selfdestruct, dangerous delegatecall
@@ -334,7 +334,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
     if cmd_lower.startswith("status"):
         sig_status = "✅ Ed25519 signing active" if SIGNING_KEY else "⚠️ Signing key not loaded (reports unsigned)"
         status_text = textwrap.dedent(f"""
-        🤖 **Flip all — Smart Contract Security Copilot**
+        🤖 **Flip — Smart Contract Security Copilot**
         **Status:** 🟢 Online
         **DID:** `{DID}`
         **Signing:** {sig_status}
@@ -383,7 +383,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
         if "reentrancy" in topic or "call" in topic:
             fix_text = textwrap.dedent("""
-            🛠️ **Flip all Remediation Guide: Reentrancy**
+            🛠️ **Flip Remediation Guide: Reentrancy**
 
             **Vulnerability:** External `.call{value:}` before internal balance updates allows an attacker to re-enter before state is committed.
 
@@ -418,7 +418,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
         elif "origin" in topic or "tx.origin" in topic or "phish" in topic:
             fix_text = textwrap.dedent("""
-            🛠️ **Flip all Remediation Guide: tx.origin Phishing**
+            🛠️ **Flip Remediation Guide: tx.origin Phishing**
 
             **Vulnerability:** `tx.origin` returns the original sender of the transaction (EOA), not the immediate caller. If an admin is tricked into calling a malicious contract, that contract can forward the call and pass the `tx.origin == owner` check.
 
@@ -441,7 +441,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
         elif "oracle" in topic or "flash" in topic or "price" in topic or "slot0" in topic:
             fix_text = textwrap.dedent("""
-            🛠️ **Flip all Remediation Guide: Flash Loan Oracle Manipulation**
+            🛠️ **Flip Remediation Guide: Flash Loan Oracle Manipulation**
 
             **Vulnerability:** Reading spot reserves (`slot0`, `getReserves`) can be manipulated within a single block using flash loans.
 
@@ -459,7 +459,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
         elif "near" in topic or "callback" in topic or "cross" in topic:
             fix_text = textwrap.dedent("""
-            🛠️ **Flip all Remediation Guide: NEAR Cross-Contract Call Safety**
+            🛠️ **Flip Remediation Guide: NEAR Cross-Contract Call Safety**
 
             **Vulnerability:** NEAR's async model means cross-contract calls can fail silently.
             State updated BEFORE the call result is confirmed = funds can be lost.
@@ -510,7 +510,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
         elif "unwrap" in topic or "panic" in topic or "rust" in topic:
             fix_text = textwrap.dedent("""
-            🛠️ **Flip all Remediation Guide: Rust Panic Safety (NEAR)**
+            🛠️ **Flip Remediation Guide: Rust Panic Safety (NEAR)**
 
             **Vulnerability:** `.unwrap()` and `.expect()` cause panics that consume all
             attached gas and leave the contract in an indeterminate state.
@@ -544,14 +544,14 @@ def handle_message(body: dict) -> Iterator[bytes]:
 
         else:
             fix_text = textwrap.dedent("""
-            🛠️ **Flip all Remediation Library**
+            🛠️ **Flip Remediation Library**
             Available guides:
-            • `@Flip all fix reentrancy` — Checks-Effects-Interactions & ReentrancyGuard (EVM)
-            • `@Flip all fix tx.origin` — Role-based access control & phishing prevention (EVM)
-            • `@Flip all fix oracle` — Flash-loan resistant TWAP & Chainlink feeds (EVM)
-            • `@Flip all fix near` — NEAR cross-contract call safety & callback patterns
-            • `@Flip all fix unwrap` — Rust panic-safe error handling for NEAR contracts
-            • `@Flip all fix erc20` — SafeERC20 implementation
+            • `@Flip fix reentrancy` — Checks-Effects-Interactions & ReentrancyGuard (EVM)
+            • `@Flip fix tx.origin` — Role-based access control & phishing prevention (EVM)
+            • `@Flip fix oracle` — Flash-loan resistant TWAP & Chainlink feeds (EVM)
+            • `@Flip fix near` — NEAR cross-contract call safety & callback patterns
+            • `@Flip fix unwrap` — Rust panic-safe error handling for NEAR contracts
+            • `@Flip fix erc20` — SafeERC20 implementation
             """).strip()
             yield from stream_response(fix_text)
             return
@@ -560,7 +560,7 @@ def handle_message(body: dict) -> Iterator[bytes]:
     if cmd_lower.startswith(("verify", "proof")):
         sig_candidate = re.sub(r"^(verify|proof)\s*", "", text_clean, flags=re.IGNORECASE).strip()
         if len(sig_candidate) < 20:
-            yield from stream_response("⚠️ Usage: `@Flip all verify <base64_signature>` — provides cryptographic attestation verification.")
+            yield from stream_response("⚠️ Usage: `@Flip verify <base64_signature>` — provides cryptographic attestation verification.")
             return
 
         yield from stream_response(textwrap.dedent(f"""
@@ -568,14 +568,14 @@ def handle_message(body: dict) -> Iterator[bytes]:
         • **Attested DID:** `{DID}`
         • **Algorithm:** Ed25519 (RFC 8032)
         • **Signature snippet:** `{sig_candidate[:32]}...`
-        • **Status:** ✅ Valid cryptographic signature structure registered to Flip all
+        • **Status:** ✅ Valid cryptographic signature structure registered to Flip
         """).strip())
         return
 
     # ── fallback ──────────────────────────────────────────────────────────────
     yield from stream_response(
         f"🤔 I didn't understand `{text_clean[:60]}`. "
-        "Try `@Flip all help` for a list of commands, or `@Flip all audit <contract_code>` to run a security scan."
+        "Try `@Flip help` for a list of commands, or `@Flip audit <contract_code>` to run a security scan."
     )
 
 
